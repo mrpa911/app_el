@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Заявка на материалы</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:var(--tg-theme-bg-color,#fff);
+  --fg:var(--tg-theme-text-color,#111);
+  --hint:var(--tg-theme-hint-color,#7d7d85);
+  --link:var(--tg-theme-link-color,#2481cc);
+  --btn:var(--tg-theme-button-color,#2481cc);
+  --btn-fg:var(--tg-theme-button-text-color,#fff);
+  --sec:var(--tg-theme-secondary-bg-color,#f1f1f4);
+  --line:color-mix(in srgb,var(--hint) 30%,transparent);
+  --danger:#d64545;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:16px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:12px 12px 96px}
+h1{font-size:20px;margin:4px 0 12px}
+h2{font-size:15px;margin:18px 0 8px;color:var(--hint);font-weight:600}
+label{display:block;font-size:13px;color:var(--hint);margin:12px 0 4px}
+input,select,button{font:inherit;color:var(--fg)}
+input,select{width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--sec);outline:none}
+input:focus,select:focus{border-color:var(--btn)}
+button{border:0;border-radius:10px;padding:12px 16px;background:var(--btn);color:var(--btn-fg);font-weight:600;cursor:pointer}
+button:disabled{opacity:.45}
+.status{font-size:12px;color:var(--hint);margin:-4px 0 4px}
+.search{position:relative}
+.sugg{position:absolute;left:0;right:0;top:100%;margin:4px 0 0;padding:0;list-style:none;background:var(--bg);border:1px solid var(--line);border-radius:10px;max-height:46vh;overflow:auto;z-index:10;box-shadow:0 6px 20px rgba(0,0,0,.18)}
+.sugg li{padding:10px 12px;border-bottom:1px solid var(--line);display:flex;gap:8px;justify-content:space-between;align-items:center}
+.sugg li:last-child{border:0}
+.sugg li:active{background:var(--sec)}
+.sugg small{color:var(--hint);white-space:nowrap}
+.badge{font-size:11px;padding:2px 6px;border-radius:6px;background:var(--btn);color:var(--btn-fg);margin-left:6px;white-space:nowrap}
+.qrow{display:flex;gap:8px}
+.qrow input{flex:1}
+.hint{font-size:13px;color:var(--link);min-height:18px;margin:6px 0 0}
+.item{display:grid;grid-template-columns:1fr 84px 36px;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.item .n{font-size:15px}.item .u{font-size:12px;color:var(--hint)}
+.item input{padding:8px;text-align:center}
+.item .x{background:transparent;color:var(--danger);padding:6px;font-size:20px}
+.empty{color:var(--hint);padding:8px 0}
+.bar{position:fixed;left:0;right:0;bottom:0;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px));background:var(--bg);border-top:1px solid var(--line)}
+.bar button{width:100%;padding:14px}
+.toast{position:fixed;left:12px;right:12px;bottom:84px;padding:12px;border-radius:10px;background:var(--fg);color:var(--bg);text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<h1>Заявка на материалы</h1>
+
+<label for="obj">Объект</label>
+<select id="obj"><option value="">Загрузка…</option></select>
+<div class="status" id="status"></div>
+
+<label for="q">Материал</label>
+<div class="search">
+  <input id="q" type="text" placeholder="Например: гайка 6" autocomplete="off" enterkeyhint="next">
+  <ul class="sugg" id="sugg" hidden></ul>
+</div>
+
+<label for="qty">Количество</label>
+<div class="qrow">
+  <input id="qty" type="text" inputmode="decimal" placeholder="0" enterkeyhint="done" autocomplete="off">
+  <button id="add" type="button">Добавить</button>
+</div>
+<div class="hint" id="hint"></div>
+
+<h2>Корзина</h2>
+<div id="cart"></div>
+
+<div class="bar"><button id="send" type="button" disabled>Отправить заявку</button></div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ==== ВСТАВЬТЕ URL РАЗВЁРНУТОГО Apps Script (Web App, доступ «Все») ====
+const API_URL = 'https://script.google.com/macros/s/AKfycbxDXAqoufBzuiekKG216SeklYUzPiMdl-dBUnQDms1HrTM_ZTZDx1Mr5MnbRwJwByA/exec';
+// =====================================================================
+
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+const user = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || { first_name: 'Браузер' };
+
+const $ = id => document.getElementById(id);
+const el = { obj:$('obj'), q:$('q'), sugg:$('sugg'), qty:$('qty'), add:$('add'), hint:$('hint'), cart:$('cart'), send:$('send'), status:$('status'), toast:$('toast') };
+
+const LS = { dict:'dict_v1', uuid:'req_uuid', cart:'cart_v1', obj:'last_obj' };
+const store = {
+  get(k){ try{ return JSON.parse(localStorage.getItem(k)); }catch(e){ return null; } },
+  set(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
+};
+
+let objects = [], materials = [], cart = store.get(LS.cart) || [], picked = null;
+let uuid = store.get(LS.uuid) || newUuid(); store.set(LS.uuid, uuid);
+
+function newUuid(){
+  return (crypto.randomUUID ? crypto.randomUUID() :
+    'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c==='x'?r:(r&3|8)).toString(16); }));
+}
+const norm = s => String(s).toLowerCase().replace(/ё/g,'е');
+const parseNum = s => parseFloat(String(s).replace(/\s/g,'').replace(',','.'));
+const fmt = n => String(Math.round(n*1000)/1000).replace('.',',');
+function toast(t){ el.toast.textContent = t; el.toast.classList.add('on'); setTimeout(()=>el.toast.classList.remove('on'), 2600); }
+
+/* ---------- Справочник: кэш + фоновое обновление ---------- */
+function applyDict(d){
+  objects = d.objects || [];
+  materials = (d.materials || []).map(m => ({
+    ...m,
+    tags: String(m.tag||'').split(',').map(t=>norm(t).trim()).filter(Boolean),
+    hay: norm(m.name + ' ' + m.article)
+  }));
+  const last = store.get(LS.obj);
+  el.obj.innerHTML = '<option value="">— выберите объект —</option>' +
+    objects.map(o => `<option>${o.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</option>`).join('');
+  if (last && objects.includes(last)) el.obj.value = last;
+  updateSend();
+}
+async function loadDict(){
+  const cached = store.get(LS.dict);
+  if (cached) { applyDict(cached); el.status.textContent = 'Справочник из кэша, обновляю…'; }
+  try {
+    const r = await fetch(API_URL);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error);
+    store.set(LS.dict, d); applyDict(d);
+    el.status.textContent = 'Справочник обновлён';
+  } catch(e) {
+    el.status.textContent = cached ? 'Нет связи — работаю по кэшу' : 'Нет связи и нет кэша. Откройте приложение при наличии сети.';
+  }
+}
+
+/* ---------- Поиск ---------- */
+function search(){
+  const tokens = norm(el.q.value).split(/\s+/).filter(Boolean);
+  if (!tokens.length) return hideSugg();
+  const res = [];
+  for (const m of materials) {
+    if (tokens.every(t => m.hay.includes(t))) { res.push(m); if (res.length >= 25) break; }
+  }
+  if (!res.length) { el.sugg.innerHTML = '<li><small>Ничего не найдено</small></li>'; el.sugg.hidden = false; return; }
+  el.sugg.innerHTML = '';
+  res.forEach(m => {
+    const li = document.createElement('li');
+    const a = document.createElement('span'); a.textContent = m.name;
+    if (m.formula) { const b = document.createElement('span'); b.className = 'badge'; b.textContent = 'авто'; a.appendChild(b); }
+    const u = document.createElement('small'); u.textContent = m.unit;
+    li.append(a, u);
+    li.addEventListener('click', () => pick(m));
+    el.sugg.appendChild(li);
+  });
+  el.sugg.hidden = false;
+}
+function hideSugg(){ el.sugg.hidden = true; }
+
+function pick(m){
+  picked = m;
+  el.q.value = m.name;
+  hideSugg();
+  el.hint.textContent = '';
+  el.qty.value = '';
+  if (m.formula) autoCalc(m);
+  el.qty.focus();
+  el.qty.select();
+}
+
+/* ---------- Реверсивный авторасчёт ---------- */
+function tagSum(tag){
+  return cart.reduce((s, it) => s + ((it.tags||[]).includes(tag) ? it.qty : 0), 0);
+}
+function autoCalc(m){
+  const f = norm(m.formula), ID = /[\p{L}_][\p{L}\p{N}_]*/gu;
+  const used = [...new Set(f.match(ID) || [])];
+  const sums = {}; let total = 0;
+  used.forEach(t => { sums[t] = tagSum(t); total += sums[t]; });
+  if (!total) { el.hint.textContent = 'Авторасчет: в корзине нет позиций с тегом «' + used.join('», «') + '»'; return; }
+  const expr = f.replace(/,/g,'.').replace(ID, t => sums[t]);
+  if (!/^[\d\s+\-*/().]+$/.test(expr)) { el.hint.textContent = 'Ошибка формулы: ' + m.formula; return; }
+  let v;
+  try { v = Function('"use strict";return (' + expr + ')')(); } catch(e) { v = NaN; }
+  if (!isFinite(v) || v <= 0) { el.hint.textContent = 'Ошибка формулы: ' + m.formula; return; }
+  v = Math.ceil(v - 1e-9);
+  el.qty.value = v;
+  const shown = f.replace(ID, t => `${t} (${fmt(sums[t])} шт)`).replace(/\*/g,'×').replace(/\//g,'÷');
+  el.hint.textContent = `Авторасчет: ${shown} = ${v}`;
+}
+
+/* ---------- Корзина ---------- */
+function addItem(){
+  const qty = parseNum(el.qty.value);
+  if (!picked || norm(el.q.value) !== norm(picked.name)) { toast('Выберите материал из списка'); el.q.focus(); return; }
+  if (!(qty > 0)) { toast('Введите количество'); el.qty.focus(); return; }
+  const ex = cart.find(i => i.article === picked.article && i.name === picked.name);
+  if (ex) ex.qty = Math.round((ex.qty + qty)*1000)/1000;
+  else cart.push({ article:picked.article, name:picked.name, unit:picked.unit, tags:picked.tags, qty });
+  picked = null; el.q.value = ''; el.qty.value = ''; el.hint.textContent = '';
+  saveCart(); renderCart(); el.q.focus();
+}
+function saveCart(){ store.set(LS.cart, cart); }
+function renderCart(){
+  el.cart.innerHTML = '';
+  if (!cart.length) el.cart.innerHTML = '<div class="empty">Пока пусто. Найдите материал и добавьте количество.</div>';
+  cart.forEach((it, i) => {
+    const row = document.createElement('div'); row.className = 'item';
+    const n = document.createElement('div');
+    n.innerHTML = '<div class="n"></div><div class="u"></div>';
+    n.firstChild.textContent = it.name; n.lastChild.textContent = it.unit;
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.inputMode = 'decimal'; inp.value = fmt(it.qty);
+    inp.addEventListener('change', () => {
+      const v = parseNum(inp.value);
+      if (v > 0) { it.qty = v; saveCart(); } else inp.value = fmt(it.qty);
+    });
+    const x = document.createElement('button'); x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label','Удалить');
+    x.addEventListener('click', () => { cart.splice(i,1); saveCart(); renderCart(); });
+    row.append(n, inp, x); el.cart.appendChild(row);
+  });
+  updateSend();
+}
+function updateSend(){ el.send.disabled = !(cart.length && el.obj.value); }
+
+/* ---------- Отправка (с защитой от дублей по UUID) ---------- */
+let sending = false;
+async function send(){
+  if (sending || el.send.disabled) return;
+  sending = true; el.send.disabled = true; el.send.textContent = 'Отправляю…';
+  try {
+    const r = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        uuid, object: el.obj.value, user,
+        items: cart.map(i => ({ article:i.article, name:i.name, unit:i.unit, qty:i.qty }))
+      })
+    });
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Ошибка сервера');
+    cart = []; saveCart(); renderCart();
+    uuid = newUuid(); store.set(LS.uuid, uuid);
+    toast(d.duplicate ? 'Заявка уже была принята' : 'Заявка отправлена');
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+  } catch(e) {
+    toast('Не отправлено. Повторите: дубля не будет');
+  } finally {
+    sending = false; el.send.textContent = 'Отправить заявку'; updateSend();
+  }
+}
+
+/* ---------- События ---------- */
+el.q.addEventListener('input', () => { picked = null; search(); });
+el.q.addEventListener('focus', () => { if (el.q.value.trim()) search(); });
+el.qty.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addItem(); } });
+el.add.addEventListener('click', addItem);
+el.send.addEventListener('click', send);
+el.obj.addEventListener('change', () => { store.set(LS.obj, el.obj.value); updateSend(); });
+document.addEventListener('click', e => { if (!e.target.closest('.search')) hideSugg(); });
+
+renderCart();
+loadDict();
+</script>
+</body>
+</html>
